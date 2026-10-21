@@ -152,12 +152,35 @@ disconnectBtn.addEventListener('click', () => {
   disconnectBtn.disabled = true;
   status('已中斷連線');
 });
+
 document.querySelectorAll('[data-car]').forEach(btn => {
-  const begin = e => { e.preventDefault(); startCar(btn.dataset.car); };
-  const end = e => { e.preventDefault(); if (activeCarCommand) stopCar(true); };
+  btn.style.touchAction = 'none';
+
+  const begin = e => {
+    e.preventDefault();
+
+    if (e.button !== undefined && e.button !== 0) return;
+
+    if (btn.setPointerCapture && e.pointerId !== undefined) {
+      try {
+        btn.setPointerCapture(e.pointerId);
+      } catch (_) {}
+    }
+
+    startCar(btn.dataset.car);
+  };
+
+  const end = e => {
+    e.preventDefault();
+    stopCar(true);
+  };
+
   btn.addEventListener('pointerdown', begin);
-  ['pointerup','pointercancel','pointerleave','lostpointercapture'].forEach(ev => btn.addEventListener(ev, end));
+  btn.addEventListener('pointerup', end);
+  btn.addEventListener('pointercancel', end);
+  btn.addEventListener('contextmenu', e => e.preventDefault());
 });
+
 document.querySelector('[data-stop]').addEventListener('click', () => stopCar(true));
 document.querySelectorAll('[data-arm]').forEach(btn => {
   btn.addEventListener('click', () => sendCommand(btn.dataset.arm));
