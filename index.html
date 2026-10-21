@@ -94,7 +94,8 @@ async function sendCommand(command){
     await characteristic.writeValueWithoutResponse(new TextEncoder().encode(command));
     status('BT24 已連接｜最近指令：' + command);
   } catch (e) {
-    status('傳送失敗：' + e.message);
+    status('傳送失敗：' + e.name + '｜' + e.message);
+    console.error('BT24 傳送錯誤：', e);
   }
 }
 async function connect(){
