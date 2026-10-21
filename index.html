@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#111827">
+<title>救災機器人控制台</title>
+<style>
+:root{color-scheme:dark;--bg:#111827;--panel:#1f2937;--panel2:#374151;--text:#f9fafb;--muted:#9ca3af;--accent:#38bdf8;--danger:#f87171}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;touch-action:manipulation}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:#0b1220;border-bottom:1px solid #374151}
+h1{font-size:18px;margin:0}
+#status{font-size:12px;color:var(--muted);margin-top:3px}
+button{border:0;border-radius:12px;background:var(--panel2);color:var(--text);font-size:18px;font-weight:700;min-height:52px;padding:10px;touch-action:none;user-select:none;-webkit-user-select:none}
+button:active{filter:brightness(1.25);transform:scale(.98)}
+button:disabled{opacity:.4}
+#connect{background:#0369a1;min-height:42px;font-size:14px;padding:8px 12px}
+#disconnect{background:#4b5563;min-height:42px;font-size:14px;padding:8px 12px}
+main{display:grid;grid-template-columns:minmax(150px,.85fr) minmax(240px,1.6fr) minmax(150px,.85fr);gap:12px;padding:12px;min-height:calc(100dvh - 65px)}
+.panel{background:var(--panel);border:1px solid #374151;border-radius:16px;padding:12px;min-width:0}
+h2{font-size:14px;color:#cbd5e1;margin:0 0 10px;text-align:center}
+.dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:290px;margin:auto}
+.dpad button{min-height:64px;font-size:24px}
+.blank{visibility:hidden}
+#camera{width:100%;height:calc(100% - 28px);min-height:220px;max-height:calc(100dvh - 130px);object-fit:contain;background:#030712;border-radius:10px;display:block}
+.camera-note{font-size:11px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}
+.armgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.armgrid button{min-height:58px;font-size:22px}
+#log{font-size:12px;color:var(--muted);margin-top:10px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:80px;overflow:auto}
+@media (orientation:portrait),(max-width:700px){
+  header{padding:8px 10px}h1{font-size:16px}
+  main{grid-template-columns:1fr 1.2fr;grid-template-areas:"car arm" "cam cam";gap:8px;padding:8px}
+  #carPanel{grid-area:car}#armPanel{grid-area:arm}#camPanel{grid-area:cam}
+  #camera{height:auto;min-height:180px;max-height:45dvh}
+  .dpad{gap:5px}.dpad button{min-height:54px;padding:5px}
+  .armgrid{gap:6px}.armgrid button{min-height:48px}
+  .panel{padding:9px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>救災機器人控制台</h1><div id="status">尚未連接 BT24</div></div>
+  <div style="display:flex;gap:6px"><button id="connect">連接 BT24</button><button id="disconnect" disabled>中斷</button></div>
+</header>
+<main>
+  <section class="panel" id="carPanel">
+    <h2>小車方向</h2>
+    <div class="dpad">
+      <button class="blank" aria-hidden="true" tabindex="-1">　</button>
+      <button data-car="a" aria-label="前進">▲</button>
+      <button class="blank" aria-hidden="true" tabindex="-1">　</button>
+      <button data-car="b" aria-label="左移">◀</button>
+      <button data-stop aria-label="停止">■</button>
+      <button data-car="d" aria-label="右移">▶</button>
+      <button class="blank" aria-hidden="true" tabindex="-1">　</button>
+      <button data-car="c" aria-label="後退">▼</button>
+      <button class="blank" aria-hidden="true" tabindex="-1">　</button>
+    </div>
+    <div class="camera-note">方向鍵：按住移動，放開時傳送停止指令 s。首次測試請先架空車輪。</div>
+  </section>
+  <section class="panel" id="camPanel">
+    <h2>ESP32-CAM 即時影像</h2>
+    <img id="camera" src="http://172.20.10.3:81/stream" alt="攝影機尚未載入">
+    <div class="camera-note">串流：172.20.10.3:81/stream</div>
+  </section>
+  <section class="panel" id="armPanel">
+    <h2>機械手臂</h2>
+    <div class="armgrid">
+      <button data-arm="e">E</button><button data-arm="f">F</button>
+      <button data-arm="j">U</button><button data-arm="i">O</button>
+      <button data-arm="k">J</button><button data-arm="h">L</button>
+      <button data-arm="l">I</button><button data-arm="g">K</button>
+    </div>
+    <div class="camera-note">按鈕標示沿用原控制鍵；實際傳送字元依原 Python 對應表。</div>
+  </section>
+</main>
+<script>
+const SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb';
+const CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb';
+const statusEl = document.getElementById('status');
+const connectBtn = document.getElementById('connect');
+const disconnectBtn = document.getElementById('disconnect');
+let device = null, characteristic = null, repeatTimer = null, activeCarCommand = null;
+
+function status(message){ statusEl.textContent = message; }
+async function sendCommand(command){
+  if (!characteristic || !device?.gatt?.connected) {
+    status('尚未連接 BT24，請先按「連接 BT24」');
+    return;
+  }
+  try {
+    await characteristic.writeValueWithoutResponse(new TextEncoder().encode(command));
+    status('BT24 已連接｜最近指令：' + command);
+  } catch (e) {
+    status('傳送失敗：' + e.message);
+  }
+}
+async function connect(){
+  if (!navigator.bluetooth) {
+    status('此瀏覽器不支援 Web Bluetooth；請用 Android Chrome 並以 HTTPS 開啟網頁');
+    return;
+  }
+  try {
+    status('正在搜尋 BT24…');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'BT24' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      characteristic = null;
+      stopCar(false);
+      status('BT24 已中斷連線');
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+    });
+    status('正在連接 ' + (device.name || '藍牙裝置') + '…');
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+    status('已連接 ' + (device.name || 'BT24'));
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+  } catch (e) {
+    status('連線失敗：' + e.message);
+    connectBtn.disabled = false;
+  }
+}
+function stopCar(sendStop = true){
+  if (repeatTimer) clearInterval(repeatTimer);
+  repeatTimer = null;
+  activeCarCommand = null;
+  if (sendStop) void sendCommand('s');
+}
+function startCar(command){
+  if (!characteristic) { status('請先連接 BT24'); return; }
+  stopCar(false);
+  activeCarCommand = command;
+  void sendCommand(command);
+  repeatTimer = setInterval(() => {
+    if (activeCarCommand) void sendCommand(activeCarCommand);
+  }, 180);
+}
+connectBtn.addEventListener('click', connect);
+disconnectBtn.addEventListener('click', () => {
+  stopCar(false);
+  if (device?.gatt?.connected) device.gatt.disconnect();
+  characteristic = null;
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  status('已中斷連線');
+});
+document.querySelectorAll('[data-car]').forEach(btn => {
+  const begin = e => { e.preventDefault(); startCar(btn.dataset.car); };
+  const end = e => { e.preventDefault(); if (activeCarCommand) stopCar(true); };
+  btn.addEventListener('pointerdown', begin);
+  ['pointerup','pointercancel','pointerleave','lostpointercapture'].forEach(ev => btn.addEventListener(ev, end));
+});
+document.querySelector('[data-stop]').addEventListener('click', () => stopCar(true));
+document.querySelectorAll('[data-arm]').forEach(btn => {
+  btn.addEventListener('click', () => sendCommand(btn.dataset.arm));
+});
+document.getElementById('camera').addEventListener('error', () => {
+  document.querySelector('.camera-note').textContent = '影像載入失敗：請確認手機與 ESP32-CAM 在同一個熱點，且攝影機 IP 仍是 172.20.10.3。';
+});
+</script>
+</body>
+</html>
